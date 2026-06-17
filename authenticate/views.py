@@ -1,0 +1,307 @@
+from rest_framework.views import APIView
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, BasePermission
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import login, logout
+from django.contrib.auth.hashers import make_password
+import random
+
+from .models import PortalUser, PortalRoles, PortalPages, EmailOTP
+from .ser import (
+    PortalUserSerializer, PortalUserShowSerializer, RegisterSaveSerializer,
+    PortalRolesSerializer, PortalPagesSerializer, EmailSerializer, OTPVerifySerializer
+)
+from utils import send_mail
+
+MSG_ID_REQUIRED = "ID is required"
+MSG_PERMISSION_DENIED = "Permission denied."
+
+
+class IsSuperAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.is_superadmin
+
+
+class PortalUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk=None, *args, **kwargs):
+        if pk is not None:
+            # <int:pk>/ route → filter by id; get-by-username/<str:pk>/ route → filter by username
+            user = PortalUser.objects.filter(id=pk).first() if isinstance(pk, int) else PortalUser.objects.filter(username=pk.lower()).first()
+            if not user:
+                return Response({"message": "Portal User not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"data": PortalUserShowSerializer(user).data}, status=status.HTTP_200_OK)
+        if not request.user.is_superadmin:
+            return Response({"message": MSG_PERMISSION_DENIED}, status=status.HTTP_403_FORBIDDEN)
+        users = PortalUser.objects.all().order_by("created_at")
+        return Response({"data": PortalUserShowSerializer(users, many=True).data}, status=status.HTTP_200_OK)
+
+    def put(self, request, pk=None, *args, **kwargs):
+        if not pk:
+            return Response({"message": MSG_ID_REQUIRED}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_superadmin:
+            return Response({"message": MSG_PERMISSION_DENIED}, status=status.HTTP_403_FORBIDDEN)
+        user = PortalUser.objects.filter(id=pk).first()
+        if not user:
+            return Response({"message": "Portal User not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = PortalUserSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            updated_user = serializer.save()
+            return Response({"message": "Portal User updated successfully", "data": PortalUserShowSerializer(updated_user).data}, status=status.HTTP_200_OK)
+        return Response({"message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk=None, *args, **kwargs):
+        if not pk:
+            return Response({"message": MSG_ID_REQUIRED}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_superadmin:
+            return Response({"message": MSG_PERMISSION_DENIED}, status=status.HTTP_403_FORBIDDEN)
+        user = PortalUser.objects.filter(id=pk).first()
+        if not user:
+            return Response({"message": "Portal User not found"}, status=status.HTTP_404_NOT_FOUND)
+        user.delete()
+        return Response({"message": "Portal User deleted successfully"}, status=status.HTTP_200_OK)
+
+
+class UserLoginView(APIView):
+    def post(self, request, *args, **kwargs):
+        username = request.data.get('username')
+        password = request.data.get('password')
+
+        if not username or not password:
+            return Response({"message": "Username and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = PortalUser.objects.filter(username=username).first()
+        if user and user.check_password(password):
+            if not user.status:
+                return Response({"message": "Authentication error: You are no longer an active user."}, status=status.HTTP_400_BAD_REQUEST)
+            login(request, user)
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                "message": "User logged in successfully.",
+                "refresh_token": str(refresh),
+                "access_token": str(refresh.access_token),
+                "logged_user": PortalUserShowSerializer(user).data
+            }, status=status.HTTP_200_OK)
+        return Response({"message": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+class UserLogoutView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        logout(request)
+        return Response({"message": "Logout successful."}, status=status.HTTP_200_OK)
+
+
+class UserRegisterView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def get(self, request, *args, **kwargs):
+        roles = PortalRolesSerializer(PortalRoles.objects.all(), many=True)
+        return Response({"roles": roles.data}, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        serializer = RegisterSaveSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response({"message": "User registered successfully", "data": PortalUserShowSerializer(user).data}, status=status.HTTP_201_CREATED)
+        return Response({"message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PortalRolesView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def get(self, request, pk=None, *args, **kwargs):
+        if pk:
+            role = PortalRoles.objects.filter(id=pk).first()
+            if not role:
+                return Response({"message": "Role not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"data": PortalRolesSerializer(role).data}, status=status.HTTP_200_OK)
+        roles = PortalRoles.objects.all()
+        return Response({"data": PortalRolesSerializer(roles, many=True).data}, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        serializer = PortalRolesSerializer(data=request.data)
+        if serializer.is_valid():
+            role = serializer.save()
+            return Response({"message": "Role created successfully", "data": PortalRolesSerializer(role).data}, status=status.HTTP_201_CREATED)
+        return Response({"message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk=None, *args, **kwargs):
+        if not pk:
+            return Response({"message": MSG_ID_REQUIRED}, status=status.HTTP_400_BAD_REQUEST)
+        role = PortalRoles.objects.filter(id=pk).first()
+        if not role:
+            return Response({"message": "Role not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = PortalRolesSerializer(role, data=request.data, partial=True)
+        if serializer.is_valid():
+            updated_role = serializer.save()
+            return Response({"message": "Role updated successfully", "data": PortalRolesSerializer(updated_role).data}, status=status.HTTP_200_OK)
+        return Response({"message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk=None, *args, **kwargs):
+        if not pk:
+            return Response({"message": MSG_ID_REQUIRED}, status=status.HTTP_400_BAD_REQUEST)
+        role = PortalRoles.objects.filter(id=pk).first()
+        if not role:
+            return Response({"message": "Role not found"}, status=status.HTTP_404_NOT_FOUND)
+        if role.name.lower() == 'superadmin':
+            return Response({"message": "Cannot delete the superadmin role"}, status=status.HTTP_400_BAD_REQUEST)
+        role.delete()
+        return Response({"message": "Role deleted successfully"}, status=status.HTTP_200_OK)
+
+
+class PortalPagesView(APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def get(self, request, pk=None, *args, **kwargs):
+        if pk:
+            page = PortalPages.objects.filter(id=pk).first()
+            if not page:
+                return Response({"message": "Page not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"data": PortalPagesSerializer(page).data}, status=status.HTTP_200_OK)
+        pages = PortalPages.objects.all()
+        return Response({"data": PortalPagesSerializer(pages, many=True).data}, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        serializer = PortalPagesSerializer(data=request.data)
+        if serializer.is_valid():
+            page = serializer.save()
+            return Response({"message": "Page created successfully", "data": PortalPagesSerializer(page).data}, status=status.HTTP_201_CREATED)
+        return Response({"message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pk=None, *args, **kwargs):
+        if not pk:
+            return Response({"message": MSG_ID_REQUIRED}, status=status.HTTP_400_BAD_REQUEST)
+        page = PortalPages.objects.filter(id=pk).first()
+        if not page:
+            return Response({"message": "Page not found"}, status=status.HTTP_404_NOT_FOUND)
+        serializer = PortalPagesSerializer(page, data=request.data, partial=True)
+        if serializer.is_valid():
+            updated_page = serializer.save()
+            return Response({"message": "Page updated successfully", "data": PortalPagesSerializer(updated_page).data}, status=status.HTTP_200_OK)
+        return Response({"message": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk=None, *args, **kwargs):
+        if not pk:
+            return Response({"message": MSG_ID_REQUIRED}, status=status.HTTP_400_BAD_REQUEST)
+        page = PortalPages.objects.filter(id=pk).first()
+        if not page:
+            return Response({"message": "Page not found"}, status=status.HTTP_404_NOT_FOUND)
+        page.delete()
+        return Response({"message": "Page deleted successfully"}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    user = request.user
+    old = request.data.get('old_password')
+    
+    new = request.data.get('new_password')
+    confirm = request.data.get('confirm_password')
+    if not old or not new or not confirm:
+        return Response({"message": "old_password, new_password and confirm_password are required."}, status=status.HTTP_400_BAD_REQUEST)
+    old, new, confirm = str(old), str(new), str(confirm)
+    print(old,new,confirm)
+    if new != confirm:
+        return Response({"message": "New password and confirm password do not match."}, status=status.HTTP_400_BAD_REQUEST)
+    if not user.check_password(old):
+        return Response({"message": "Old password is incorrect."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        user.password = make_password(new)
+        user.save()
+        send_mail(
+            subject="Password Changed Successfully",
+            message=f"Hello {user.username},\n\nYour password has been changed successfully.\n\nIf you did not initiate this change, please contact support immediately.",
+            recipients=user.email
+        )
+        return Response({"message": "Password updated successfully."}, status=status.HTTP_200_OK)
+    except Exception:
+        return Response({"message": "Unable to update password."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+def verify_email(request):
+    serializer = EmailSerializer(data=request.data)
+    if serializer.is_valid():
+        email = serializer.validated_data["email"]
+        if PortalUser.objects.filter(email=email).exists():
+            return Response({"message": "Email exists"}, status=status.HTTP_200_OK)
+        return Response({"message": "Email does not exist"}, status=status.HTTP_404_NOT_FOUND)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+def send_otp(request):
+    serializer = EmailSerializer(data=request.data)
+    if serializer.is_valid():
+        email = serializer.validated_data["email"]
+        user = PortalUser.objects.filter(email=email).first()
+        if not user:
+            return Response({"message": "User not found."}, status=status.HTTP_400_BAD_REQUEST)
+        otp = str(random.randint(100000, 999999))
+        print("otp=",otp)
+        EmailOTP.objects.update_or_create(user=user, defaults={"otp": otp, "is_verified": False})
+        send_mail(subject="Your OTP Code", message=f"Your OTP is {otp}", recipients=email)
+        return Response({"message": "OTP sent successfully"}, status=status.HTTP_200_OK)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+def verify_otp(request):
+    serializer = OTPVerifySerializer(data=request.data)
+    if serializer.is_valid():
+        email = serializer.validated_data["email"]
+        otp = serializer.validated_data["otp"]
+        try:
+            user = PortalUser.objects.get(email=email)
+            email_otp = EmailOTP.objects.get(user=user)
+            if email_otp.otp == otp:
+                email_otp.is_verified = True
+                email_otp.save()
+                return Response({"message": "OTP verified successfully"}, status=status.HTTP_200_OK)
+            return Response({"message": "Invalid OTP"}, status=status.HTTP_400_BAD_REQUEST)
+        except (PortalUser.DoesNotExist, EmailOTP.DoesNotExist):
+            return Response({"message": "User or OTP not found"}, status=status.HTTP_404_NOT_FOUND)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+def forgot_password(request):
+    serializer = EmailSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    email = serializer.validated_data['email']
+    user = PortalUser.objects.filter(email=email).first()
+    if not user:
+        return Response({"message": "User not found."}, status=status.HTTP_400_BAD_REQUEST)
+    otp_record = EmailOTP.objects.filter(user=user, is_verified=True).first()
+    if not otp_record:
+        return Response({"message": "OTP verification required before resetting password."}, status=status.HTTP_400_BAD_REQUEST)
+    new = request.data.get('new_password')
+    confirm = request.data.get('confirm_password')
+    if not new or not confirm:
+        return Response({"message": "new_password and confirm_password are required."}, status=status.HTTP_400_BAD_REQUEST)
+    new, confirm = str(new), str(confirm)
+    if new != confirm:
+        return Response({"message": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        user.password = make_password(new)
+        user.save()
+        otp_record.is_verified = False
+        otp_record.save()
+        return Response({"message": "Password updated successfully."}, status=status.HTTP_200_OK)
+    except Exception as e:
+        print(e)
+        return Response({"message": "Unable to update password."}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+def check_username_availability(request, username):
+    if PortalUser.objects.filter(username=username).exists():
+        return Response({"message": False}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"message": True}, status=status.HTTP_200_OK)
