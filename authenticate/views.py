@@ -124,6 +124,11 @@ class PortalRolesView(APIView):
         return Response({"data": PortalRolesSerializer(roles, many=True).data}, status=status.HTTP_200_OK)
 
     def post(self, request, *args, **kwargs):
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({"message": "Role name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if PortalRoles.objects.filter(name__iexact=name).exists():
+            return Response({"message": "Role already exists"}, status=status.HTTP_400_BAD_REQUEST)
         serializer = PortalRolesSerializer(data=request.data)
         if serializer.is_valid():
             role = serializer.save()
@@ -136,6 +141,13 @@ class PortalRolesView(APIView):
         role = PortalRoles.objects.filter(id=pk).first()
         if not role:
             return Response({"message": "Role not found"}, status=status.HTTP_404_NOT_FOUND)
+        name = request.data.get('name')
+        if name is not None:
+            name = name.strip()
+            if not name:
+                return Response({"message": "Role name is required"}, status=status.HTTP_400_BAD_REQUEST)
+            if PortalRoles.objects.filter(name__iexact=name).exclude(id=pk).exists():
+                return Response({"message": "Role already exists"}, status=status.HTTP_400_BAD_REQUEST)
         serializer = PortalRolesSerializer(role, data=request.data, partial=True)
         if serializer.is_valid():
             updated_role = serializer.save()

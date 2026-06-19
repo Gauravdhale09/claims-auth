@@ -7,16 +7,39 @@ class PortalPagesSerializer(serializers.ModelSerializer):
         model = PortalPages
         fields = ['id', 'name']
 
+from django.db.models import Exists, OuterRef
+
+from rest_framework import serializers
 
 class PortalRolesSerializer(serializers.ModelSerializer):
+    is_occupied = serializers.SerializerMethodField()
+
     access_pages = PortalPagesSerializer(many=True, read_only=True)
+
     access_pages_ids = serializers.PrimaryKeyRelatedField(
-        queryset=PortalPages.objects.all(), many=True, write_only=True, source='access_pages', required=False
+        queryset=PortalPages.objects.all(),
+        many=True,
+        write_only=True,
+        source='access_pages',
+        required=False
     )
 
     class Meta:
         model = PortalRoles
-        fields = ['id', 'name', 'access_pages', 'access_pages_ids']
+        fields = [
+            'id',
+            'name',
+            'is_occupied',
+            'access_pages',
+            'access_pages_ids'
+        ]
+
+    def get_is_occupied(self, obj):
+        return getattr(
+            obj,
+            'is_occupied',
+            PortalUser.objects.filter(role=obj).exists()
+        )
 
     def create(self, validated_data):
         pages = validated_data.pop('access_pages', [])
@@ -26,11 +49,13 @@ class PortalRolesSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         pages = validated_data.pop('access_pages', None)
+
         instance = super().update(instance, validated_data)
+
         if pages is not None:
             instance.access_pages.set(pages)
-        return instance
 
+        return instance
 
 class PortalUserSerializer(serializers.ModelSerializer):
     role = serializers.PrimaryKeyRelatedField(queryset=PortalRoles.objects.all(), required=False, allow_null=True)
