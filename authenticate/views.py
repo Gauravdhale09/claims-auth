@@ -28,15 +28,15 @@ class PortalUserView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, pk=None, *args, **kwargs):
+        query = PortalUser.objects.filter(is_superuser=False)
         if pk is not None:
-            # <int:pk>/ route → filter by id; get-by-username/<str:pk>/ route → filter by username
-            user = PortalUser.objects.filter(id=pk).first() if isinstance(pk, int) else PortalUser.objects.filter(username=pk.lower()).first()
+            user = query.filter(id=pk).first() if isinstance(pk, int) else query.filter(username=pk.lower()).first()
             if not user:
                 return Response({"message": "Portal User not found"}, status=status.HTTP_404_NOT_FOUND)
             return Response({"data": PortalUserShowSerializer(user).data}, status=status.HTTP_200_OK)
         if not request.user.is_superadmin:
             return Response({"message": MSG_PERMISSION_DENIED}, status=status.HTTP_403_FORBIDDEN)
-        users = PortalUser.objects.all().order_by("created_at")
+        users = query.order_by("created_at")
         return Response({"data": PortalUserShowSerializer(users, many=True).data}, status=status.HTTP_200_OK)
 
     def put(self, request, pk=None, *args, **kwargs):
