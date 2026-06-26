@@ -8,6 +8,9 @@ from django.contrib.auth import login, logout
 from django.contrib.auth.hashers import make_password
 from django.core import signing
 import pyotp
+import qrcode
+import base64
+import io
 import random
 
 from .models import PortalUser, PortalRoles, PortalPages, EmailOTP
@@ -338,7 +341,17 @@ class TOTPSetupView(APIView):
             user.save(update_fields=["totp_secret"])
         totp = pyotp.TOTP(user.totp_secret)
         qr_uri = totp.provisioning_uri(name=user.username, issuer_name="ClaimsPortal")
-        return Response({"secret": user.totp_secret, "qr_uri": qr_uri}, status=status.HTTP_200_OK)
+
+        img = qrcode.make(qr_uri)
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        qr_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+        return Response({
+            "secret": user.totp_secret,
+            "qr_uri": qr_uri,
+            "qr_image": f"data:image/png;base64,{qr_base64}",
+        }, status=status.HTTP_200_OK)
 
 
 class TOTPEnableView(APIView):
