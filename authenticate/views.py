@@ -21,6 +21,39 @@ from .ser import (
 from utils import send_mail
 
 MSG_ID_REQUIRED = "ID is required"
+
+
+def _send_2fa_enabled_email(user):
+    if not user.email:
+        return
+    subject = "Two-Factor Authentication Enabled"
+    message = (
+        f"Dear {user.username},\n\n"
+        f"Two-Factor Authentication (2FA) has been successfully enabled on your Claims Portal account.\n\n"
+        f"What this means:\n"
+        f"  - Every login will now require a one-time code in addition to your password.\n"
+        f"  - This adds an extra layer of security to protect your account.\n\n"
+        f"If you did not make this change, please contact the administrator immediately and change your password.\n\n"
+        f"Best regards,\n"
+        f"Claims Portal Team"
+    )
+    send_mail(subject=subject, message=message, recipients=user.email)
+
+
+def _send_2fa_disabled_email(user):
+    if not user.email:
+        return
+    subject = "Two-Factor Authentication Disabled"
+    message = (
+        f"Dear {user.username},\n\n"
+        f"Two-Factor Authentication (2FA) has been disabled on your Claims Portal account.\n\n"
+        f"Your account is now protected by your password alone.\n\n"
+        f"If you did not make this change, your account may be compromised. "
+        f"Please contact the administrator immediately and change your password.\n\n"
+        f"Best regards,\n"
+        f"Claims Portal Team"
+    )
+    send_mail(subject=subject, message=message, recipients=user.email)
 MSG_PERMISSION_DENIED = "Permission denied."
 
 
@@ -368,7 +401,9 @@ class TOTPEnableView(APIView):
             return Response({"message": "Invalid TOTP code."}, status=status.HTTP_400_BAD_REQUEST)
         user.totp_enabled = True
         user.save(update_fields=["totp_enabled"])
+        _send_2fa_enabled_email(user)
         return Response({"message": "TOTP enabled successfully."}, status=status.HTTP_200_OK)
+    
 
 
 class TOTPDisableView(APIView):
@@ -386,6 +421,7 @@ class TOTPDisableView(APIView):
         user.totp_enabled = False
         user.totp_secret = None
         user.save(update_fields=["totp_enabled", "totp_secret"])
+        _send_2fa_disabled_email(user)
         return Response({"message": "TOTP disabled successfully."}, status=status.HTTP_200_OK)
 
 

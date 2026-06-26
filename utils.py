@@ -6,12 +6,11 @@ import os
 from django.utils import timezone
 
 class EmailThread(threading.Thread):
-    def __init__(self, subject, message, recipient_list, attachment_path=None,notifcationObj=None):
+    def __init__(self, subject, message, recipient_list, attachment_path=None):
         self.subject = subject
         self.message = message
         self.recipient_list = recipient_list
         self.attachment_path = attachment_path
-        self.notifcationObj = notifcationObj
         threading.Thread.__init__(self)
 
     def run(self):
@@ -30,17 +29,13 @@ class EmailThread(threading.Thread):
 
             send_count = email.send(fail_silently=False)
             print(f"✅ Email sent to {self.recipient_list}")
-            if send_count and self.notifcationObj:
-                self.notifcationObj.is_notification_sent = True
-                self.notifcationObj.lateset_notification_on = timezone.now()
-                self.notifcationObj.save()
             return send_count, "mail sent successfully"
         except Exception as e:
             print(f"❌ Email failed: {e}")
             return False, e
 
-def send_mail(subject, message, recipients, attachment_path=None, notifcationObj=None):
+def send_mail(subject, message, recipients, attachment_path=None):
     if isinstance(recipients, str):
         recipients = [recipients]
-    EmailThread(subject, message, recipients, attachment_path, notifcationObj).start()
+    EmailThread(subject, message, recipients, attachment_path).start()
     return True
