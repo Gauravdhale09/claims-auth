@@ -82,7 +82,7 @@ class PortalUserShowSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PortalUser
-        fields = ['id', 'username', 'email', 'role', 'first_name', 'last_name', 'status', 'last_login', 'is_superadmin', 'accessible_pages']
+        fields = ['id', 'username', 'email', 'role', 'first_name', 'last_name', 'status', 'last_login', 'is_superadmin', 'accessible_pages', 'totp_enabled']
 
     def get_accessible_pages(self, user):
         if user.is_superadmin:

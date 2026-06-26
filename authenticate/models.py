@@ -37,6 +37,8 @@ class PortalUser(AbstractUser):
     role = models.ForeignKey(PortalRoles, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.BooleanField(default=True)
     temp_password = models.CharField(max_length=10,null=True,blank=True)
+    totp_secret = models.CharField(max_length=64, null=True, blank=True)
+    totp_enabled = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

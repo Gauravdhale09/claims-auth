@@ -6,6 +6,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import login, logout
 from django.contrib.auth.hashers import make_password
+from django.core import signing
+import pyotp
 import random
 
 from .models import PortalUser, PortalRoles, PortalPages, EmailOTP
@@ -65,6 +67,17 @@ class PortalUserView(APIView):
         return Response({"message": "Portal User deleted successfully"}, status=status.HTTP_200_OK)
 
 
+def _issue_jwt(request, user):
+    login(request, user)
+    refresh = RefreshToken.for_user(user)
+    return Response({
+        "message": "User logged in successfully.",
+        "refresh_token": str(refresh),
+        "access_token": str(refresh.access_token),
+        "logged_user": PortalUserShowSerializer(user).data
+    }, status=status.HTTP_200_OK)
+
+
 class UserLoginView(APIView):
     def post(self, request, *args, **kwargs):
         username = request.data.get('username')
@@ -77,14 +90,10 @@ class UserLoginView(APIView):
         if user and user.check_password(password):
             if not user.status:
                 return Response({"message": "Authentication error: You are no longer an active user."}, status=status.HTTP_400_BAD_REQUEST)
-            login(request, user)
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                "message": "User logged in successfully.",
-                "refresh_token": str(refresh),
-                "access_token": str(refresh.access_token),
-                "logged_user": PortalUserShowSerializer(user).data
-            }, status=status.HTTP_200_OK)
+            if user.totp_enabled:
+                totp_token = signing.dumps({"user_id": user.id}, salt="totp-login")
+                return Response({"requires_totp": True, "totp_token": totp_token}, status=status.HTTP_200_OK)
+            return _issue_jwt(request, user)
         return Response({"message": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
 
@@ -317,3 +326,71 @@ def check_username_availability(request, username):
     if PortalUser.objects.filter(username=username).exists():
         return Response({"message": False}, status=status.HTTP_400_BAD_REQUEST)
     return Response({"message": True}, status=status.HTTP_200_OK)
+
+
+class TOTPSetupView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        if not user.totp_secret:
+            user.totp_secret = pyotp.random_base32()
+            user.save(update_fields=["totp_secret"])
+        totp = pyotp.TOTP(user.totp_secret)
+        qr_uri = totp.provisioning_uri(name=user.username, issuer_name="ClaimsPortal")
+        return Response({"secret": user.totp_secret, "qr_uri": qr_uri}, status=status.HTTP_200_OK)
+
+
+class TOTPEnableView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        totp_code = request.data.get("totp_code")
+        if not totp_code:
+            return Response({"message": "totp_code is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not user.totp_secret:
+            return Response({"message": "TOTP setup not initiated. Call GET /totp/setup/ first."}, status=status.HTTP_400_BAD_REQUEST)
+        if not pyotp.TOTP(user.totp_secret).verify(str(totp_code), valid_window=1):
+            return Response({"message": "Invalid TOTP code."}, status=status.HTTP_400_BAD_REQUEST)
+        user.totp_enabled = True
+        user.save(update_fields=["totp_enabled"])
+        return Response({"message": "TOTP enabled successfully."}, status=status.HTTP_200_OK)
+
+
+class TOTPDisableView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        totp_code = request.data.get("totp_code")
+        if not totp_code:
+            return Response({"message": "totp_code is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not user.totp_enabled or not user.totp_secret:
+            return Response({"message": "TOTP is not enabled."}, status=status.HTTP_400_BAD_REQUEST)
+        if not pyotp.TOTP(user.totp_secret).verify(str(totp_code), valid_window=1):
+            return Response({"message": "Invalid TOTP code."}, status=status.HTTP_400_BAD_REQUEST)
+        user.totp_enabled = False
+        user.totp_secret = None
+        user.save(update_fields=["totp_enabled", "totp_secret"])
+        return Response({"message": "TOTP disabled successfully."}, status=status.HTTP_200_OK)
+
+
+class TOTPLoginVerifyView(APIView):
+    def post(self, request, *args, **kwargs):
+        totp_token = request.data.get("totp_token")
+        totp_code = request.data.get("totp_code")
+        if not totp_token or not totp_code:
+            return Response({"message": "totp_token and totp_code are required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = signing.loads(totp_token, salt="totp-login", max_age=300)
+        except signing.SignatureExpired:
+            return Response({"message": "TOTP session expired. Please log in again."}, status=status.HTTP_400_BAD_REQUEST)
+        except signing.BadSignature:
+            return Response({"message": "Invalid TOTP token."}, status=status.HTTP_400_BAD_REQUEST)
+        user = PortalUser.objects.filter(id=payload.get("user_id")).first()
+        if not user or not user.totp_secret:
+            return Response({"message": "User not found."}, status=status.HTTP_400_BAD_REQUEST)
+        if not pyotp.TOTP(user.totp_secret).verify(str(totp_code), valid_window=1):
+            return Response({"message": "Invalid TOTP code."}, status=status.HTTP_401_UNAUTHORIZED)
+        return _issue_jwt(request, user)
