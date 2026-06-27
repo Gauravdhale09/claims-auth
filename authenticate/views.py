@@ -113,7 +113,7 @@ def _issue_jwt(request, user):
         "logged_user": PortalUserShowSerializer(user).data
     }, status=status.HTTP_200_OK)
 
-
+from django.db.models import Q
 class UserLoginView(APIView):
     def post(self, request, *args, **kwargs):
         username = request.data.get('username')
@@ -122,7 +122,11 @@ class UserLoginView(APIView):
         if not username or not password:
             return Response({"message": "Username and password are required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = PortalUser.objects.filter(username=username).first()
+        
+
+        user = PortalUser.objects.filter(
+            Q(username=username) | Q(email=username)
+        ).first()
         if user and user.check_password(password):
             if not user.status:
                 return Response({"message": "Authentication error: You are no longer an active user."}, status=status.HTTP_400_BAD_REQUEST)
